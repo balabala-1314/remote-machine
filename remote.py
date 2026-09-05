@@ -222,6 +222,22 @@ _UTF8 = ("$OutputEncoding=[System.Text.Encoding]::UTF8; "
 CONNECT_TIMEOUT = 10
 
 
+def split_hostport(addr):
+    """`地址` 或 `地址:端口` → (地址, 端口或 None)。
+
+    端口写进 `hosts` 里而不是单开一个配置项，是因为**端口是跟着地址走的**：
+    直连那条走 22，内网穿透/跳板那条走别的口，同一台机器两条路两个口。
+    单独一个 `port` 只能表达「所有地址共用一个口」，那是错的模型。
+
+    ⚠ 只在「最后一个冒号后面全是数字」时才当端口拆 —— 裸 IPv6 地址
+    自带冒号，不加这个判据会把它拆坏。
+    """
+    host, sep, tail = addr.rpartition(':')
+    if sep and tail.isdigit() and host:
+        return host, tail
+    return addr, None
+
+
 def candidates():
     """按「最可能通」的顺序给出候选地址。"""
     order = list(HOSTS)
@@ -244,9 +260,11 @@ def _remember_good(host):
         pass
 def ssh_argv(script, timeout=None, host=None):
     """组一条 ssh 命令行。script 是要在 B 上跑的 PowerShell。"""
-    return ['ssh', '-i', KEY, '-o', 'BatchMode=yes',
-            '-o', f'ConnectTimeout={timeout or CONNECT_TIMEOUT}',
-            f'{USER}@{host or HOST}', _UTF8 + script]
+    addr, port = split_hostport(host or HOST)
+    return (['ssh', '-i', KEY, '-o', 'BatchMode=yes',
+             '-o', f'ConnectTimeout={timeout or CONNECT_TIMEOUT}']
+            + (['-p', port] if port else [])
+            + [f'{USER}@{addr}', _UTF8 + script])
 
 
 def diagnose(stderr):
@@ -283,7 +301,7 @@ def diagnose(stderr):
                 '\n'
                 '  几种真实原因，症状一模一样：\n'
                 '  ① 本机代理/VPN 接管了到局域网的路由。\n'
-                '     判据：`Find-NetRoute -RemoteIPAddress ' + HOST + '` 看走的是哪块网卡；\n'
+                '     判据：`Find-NetRoute -RemoteIPAddress ' + split_hostport(HOST)[0] + '` 看走的是哪块网卡；\n'
                 '     走的不是局域网那块就是它。解法：把网段加进代理的直连规则。\n'
                 '  ② 对面换了 IP（笔记本换网络时会）。\n'
                 '  ③ **它有好几条腿** —— 一台多网卡的机器，不同的路通往不同的它：\n'
@@ -535,9 +553,11 @@ def scp_to(local, remote_abs):
     """
     out = ''
     for host in candidates():
+        addr, port = split_hostport(host)
         rc, out = run(['scp', '-i', KEY, '-o', 'BatchMode=yes',
-                       '-o', f'ConnectTimeout={CONNECT_TIMEOUT}',
-                       local, f'{USER}@{host}:{remote_abs}'], timeout=300)
+                       '-o', f'ConnectTimeout={CONNECT_TIMEOUT}']
+                      + (['-P', port] if port else [])   # scp 是 -P 不是 -p
+                      + [local, f'{USER}@{addr}:{remote_abs}'], timeout=300)
         out = clean(out)
         if rc == 0:
             _remember_good(host)
