@@ -68,8 +68,19 @@ _NOWIN = getattr(subprocess, 'CREATE_NO_WINDOW', 0) if os.name == 'nt' else 0
 # 取参和跑子进程都自己带一份（各二十来行，比拖一个依赖便宜）。
 
 def positionals():
-    """命令行里不带 `-` 的那些参数。"""
-    return [a for a in sys.argv[1:] if not a.startswith('-')]
+    """位置参数 —— **只算到第一个 `--选项` 为止**。
+
+    不能简单地「过滤掉带横杠的」：那样 `logs watcher --timeout 60` 里的 `60`
+    会被当成第三个位置参数（于是「看 60 行」变成「看 watcher 的 60 行」还算走运，
+    换个子命令就是**安静地做错事**）。选项后面跟的到底是它的值还是位置参数，
+    从命令行本身无法判断 —— 所以约定：位置参数一律写在选项前面。
+    """
+    out = []
+    for a in sys.argv[1:]:
+        if a.startswith('-'):
+            break
+        out.append(a)
+    return out
 
 
 def flag(name):

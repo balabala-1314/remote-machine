@@ -86,7 +86,7 @@ def test_ssh命令行认得出指定的地址():
 
 @pytest.mark.parametrize('stderr, want', [
     ('kex_exchange_identification: Connection closed by remote host', '睡眠'),
-    ('ssh: connect to host 1.2.3.4 port 22: Connection timed out', '别先认定它睡了'),
+    ('ssh: connect to host 1.2.3.4 port 22: Connection timed out', '别先认定它睡了'),  # preflight-ok 报错样例里的假地址
     ('Permission denied (publickey,password).', '账号不存在'),
     ('Host key verification failed.', '主机密钥'),
 ])
@@ -118,7 +118,7 @@ def test_断开的诊断要把两种可能都说出来():
 
 def test_超时的诊断不许只说关机():
     """同一个教训换了个错误码复发过一次：断的往往是**路**，不是机器。"""
-    tip = remote.diagnose('ssh: connect to host 1.2.3.4 port 22: Connection timed out')
+    tip = remote.diagnose('ssh: connect to host 1.2.3.4 port 22: Connection timed out')  # preflight-ok 报错样例里的假地址
     assert 'ping' in tip, '少了「别拿 ping 当判据」——它在不回 ICMP 的机器上什么都不证明'
     assert '代理' in tip and '电源事件' in tip
 
@@ -277,3 +277,14 @@ def test_临时脚本带BOM(tmp_path):
         assert raw[:3] == b'\xef\xbb\xbf', '少了 BOM，中文会在执行前就烂掉'
     finally:
         os.remove(tmp)
+
+def test_选项的值不会被当成位置参数(monkeypatch):
+    """`logs watcher --timeout 60` 里的 60 是 --timeout 的值，不是第三个位置参数。
+
+    这种错**不报错，只是安静地做错事** —— 最难发现的一类。
+    约定：位置参数一律写在选项前面，遇到第一个 `-` 就停。
+    """
+    monkeypatch.setattr('sys.argv', ['remote.py', 'logs', 'watcher',
+                                     '--timeout', '60'])
+    assert remote.positionals() == ['logs', 'watcher']
+    assert remote.opt('--timeout') == '60'
