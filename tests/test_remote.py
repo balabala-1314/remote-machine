@@ -158,6 +158,65 @@ def test_记着的地址已经不在候选里就忽略它(monkeypatch, tmp_path)
     assert remote.candidates() == ['10.0.0.1']
 
 
+# ───────── 换不换地址重试（这条关系到钱）─────────
+
+def _fake_run(calls, rc_by_host):
+    """假的 run()：记下每次用的地址，按预设返回退出码。"""
+    def fake(argv, timeout=180):
+        host = [a for a in argv if '@' in a][0].split('@')[1]
+        calls.append(host)
+        return rc_by_host.get(host, 0), 'out-from-' + host
+    return fake
+
+
+def _two_hosts(monkeypatch, tmp_path, rc_by_host):
+    calls = []
+    monkeypatch.setattr(remote, 'HOSTS', ['10.0.0.1', '10.0.0.2'])
+    monkeypatch.setattr(remote, 'LAST_GOOD', str(tmp_path / 'last.txt'))
+    monkeypatch.setattr(remote, 'run', _fake_run(calls, rc_by_host))
+    ok, out = remote.call('随便一条命令')
+    return calls, ok, out
+
+
+def test_连不上才换下一个地址(monkeypatch, tmp_path):
+    """255 是 ssh 自己的错，命令**肯定没跑**，换个地址是安全的。"""
+    calls, ok, _ = _two_hosts(monkeypatch, tmp_path,
+                              {'10.0.0.1': 255, '10.0.0.2': 0})
+    assert calls == ['10.0.0.1', '10.0.0.2']
+    assert ok
+
+
+def test_远端命令失败绝不换地址重跑(monkeypatch, tmp_path):
+    """**这条关系到钱。** 命令跑了、只是它自己失败了 —— 换个地址重跑
+    等于让它跑第二遍。幂等的作业只是白跑，调付费 API 的作业**付两次钱**。
+    """
+    calls, ok, _ = _two_hosts(monkeypatch, tmp_path,
+                              {'10.0.0.1': 3, '10.0.0.2': 0})
+    assert calls == ['10.0.0.1'], '命令跑过了，不许换地址再跑一遍'
+    assert not ok
+
+
+def test_超时更不许换地址重跑(monkeypatch, tmp_path):
+    """超时是**最危险**的一种：命令很可能已经跑了，甚至跑完了。
+
+    2026-09-05 实测撞到过：一批下载跑了 4 分多钟被判超时，
+    工具换地址重跑，前 3 篇被下了两遍。
+    """
+    calls, ok, out = _two_hosts(monkeypatch, tmp_path,
+                                {'10.0.0.1': remote.TIMED_OUT, '10.0.0.2': 0})
+    assert calls == ['10.0.0.1'], '超时之后换地址重跑 = 二次执行'
+    assert not ok
+    assert '还在对面继续跑' in out, '超时要提醒人「它可能还在跑」'
+
+
+def test_本机没有ssh就别再试别的地址(monkeypatch, tmp_path):
+    """换地址也没用 —— 缺的是本机的 ssh。"""
+    calls, ok, _ = _two_hosts(monkeypatch, tmp_path,
+                              {'10.0.0.1': remote.NO_SSH, '10.0.0.2': 0})
+    assert calls == ['10.0.0.1']
+    assert not ok
+
+
 # ───────── 几条防手滑 ─────────
 
 def test_只许触发配置里列出的计划任务(capsys, monkeypatch):
