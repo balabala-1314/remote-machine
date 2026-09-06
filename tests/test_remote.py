@@ -217,6 +217,42 @@ def test_本机没有ssh就别再试别的地址(monkeypatch, tmp_path):
     assert not ok
 
 
+# ───────── 传文件的退路 ─────────
+
+def test_太大的文件不硬塞进命令行(tmp_path, monkeypatch):
+    """base64 要塞进命令行，命令行有长度上限 —— 超了要**明说**，不能默默截断。
+
+    默默截断的后果是对面拿到一个坏文件，而两边都显示「成功」。
+    """
+    f = tmp_path / 'big.bin'
+    f.write_bytes(b'x' * 900_000)      # base64 后 120 万，超过上限
+    called = []
+    monkeypatch.setattr(remote, 'call', lambda *a, **k: called.append(a) or (True, ''))
+    ok, msg = remote._push_via_ssh(str(f), 'C:/tmp/big.bin')
+    assert not ok
+    assert not called, '超限了就不该真发出去'
+    assert 'scp' in msg, '要告诉人换哪条路'
+
+
+def test_ssh直传会把路径转成反斜杠(tmp_path, monkeypatch):
+    """对面是 Windows PowerShell，正斜杠在有些位置会被吃掉。"""
+    f = tmp_path / 'a.txt'
+    f.write_bytes(b'hi')
+    seen = {}
+
+    def fake_call(script, timeout=None):
+        seen['script'] = script
+        return True, 'ok'
+
+    monkeypatch.setattr(remote, 'call', fake_call)
+    ok, _ = remote._push_via_ssh(str(f), 'C:/Windows/Temp/a.txt')
+    assert ok
+    # ⚠ 必须用原始字符串：`'C:\\Windows\\Temp\\a.txt'` 里的 `\\a` 是**响铃字符**，
+    # 那个字面量根本不是一条路径。Windows 路径写进 Python 一律加 r 前缀。
+    assert r'C:\Windows\Temp\a.txt' in seen['script']
+    assert 'FromBase64String' in seen['script']
+
+
 # ───────── 几条防手滑 ─────────
 
 def test_只许触发配置里列出的计划任务(capsys, monkeypatch):

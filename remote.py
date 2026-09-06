@@ -614,12 +614,47 @@ def scp_to(local, remote_abs):
     return False, out
 
 
+def _push_via_ssh(local, remote_abs):
+    """不用 scp，把文件 base64 塞进一条普通 ssh 命令里传过去。
+
+    **为什么需要这条退路**（2026-09-06 实测）：内网穿透/端口映射这类通道
+    （UU 远程那种）**转发得了 ssh、却扛不住 scp** —— scp 会另开连接谈 sftp 子系统，
+    在那种通道上直接死在 banner exchange。症状很迷惑人：
+    同一时刻 `ssh` 好好的，`scp` 连着六次退出码 255。
+
+    所以判据是：**「ssh 通」不等于「传得了文件」**，这俩要分开验。
+
+    代价：base64 会把体积撑大三分之一，而且整个塞进命令行，
+    所以只当退路用，大文件仍应走 scp（或者先分卷）。
+    """
+    import base64
+    with io.open(local, 'rb') as fh:
+        b64 = base64.b64encode(fh.read()).decode('ascii')
+    if len(b64) > 1_000_000:      # 命令行长度有上限，太大的别硬来
+        return False, ('这个文件太大（base64 后 %.1f MB），塞不进命令行。'
+                       '请改用能走 scp 的地址，或者先切小。' % (len(b64) / 1e6))
+    dest = remote_abs.replace('/', chr(92))    # 正斜杠 → 反斜杠（Windows 路径）
+    script = (f"$d = Split-Path '{dest}'; "
+              f"if ($d -and -not (Test-Path $d)) "
+              f"{{ New-Item -ItemType Directory -Force $d | Out-Null }}; "
+              f"[IO.File]::WriteAllBytes('{dest}', "
+              f"[Convert]::FromBase64String('{b64}')); "
+              f"Write-Output ('已写入 ' + '{dest}')")
+    return call(script, timeout=300)
+
+
 def cmd_push(local, remote_rel):
     """把一个本地文件传到对面的项目目录下（复杂脚本别硬拼引号，传过去再跑）。"""
     if not os.path.isfile(local):
         print(f'找不到本地文件：{local}')
         return 2
-    ok, out = scp_to(local, f'{ROOT_R}/{remote_rel}')
+    remote_abs = f'{ROOT_R}/{remote_rel}'
+    ok, out = scp_to(local, remote_abs)
+    if not ok:
+        # scp 全军覆没时的退路：穿透通道常常「ssh 通但 scp 不通」，
+        # 这条走普通 ssh，绕开 sftp 子系统。
+        print('scp 走不通，改用 ssh 直传（穿透通道常这样）…')
+        ok, out = _push_via_ssh(local, remote_abs)
     if not ok:
         print(out)
         tip = diagnose(out)
